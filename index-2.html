@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Дневник эмоций</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{font-family:-apple-system,'SF Pro Display','Segoe UI','Helvetica Neue',sans-serif;overflow-x:hidden}
+  body.dark{background:#131320;color:#e0e0e8}
+  body.light{background:#f4f5f7;color:#1a1a2e}
+  #root{max-width:480px;margin:0 auto;min-height:100vh;position:relative}
+  input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:3px;outline:none;background:#2a2a3a}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;cursor:pointer;background:#77C9D4}
+  textarea:focus,select:focus{outline:none;border-color:#77C9D4!important}
+  ::-webkit-scrollbar{width:0}
+  .fade-in{animation:fadeIn .3s ease}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes toastIn{from{opacity:0;transform:translate(-50%,-10px)}to{opacity:1;transform:translate(-50%,0)}}
+  .toast-anim{animation:toastIn .3s ease}
+</style>
+</head>
+<body class="dark">
+<div id="root"></div>
+<script>
+/* ═══════════════════════════════════════════
+   ДНЕВНИК ЭМОЦИЙ — Telegram Mini App
+   Standalone — custom SVG charts, no deps
+   ═══════════════════════════════════════════ */
+
+const tg=window.Telegram&&window.Telegram.WebApp;
+if(tg){tg.ready();tg.expand();try{tg.enableClosingConfirmation()}catch(e){}}
+
+const isDark=!tg||!tg.themeParams||!tg.themeParams.bg_color||parseInt((tg.themeParams.bg_color||'#131320').replace('#','').slice(0,2),16)<128;
+if(!isDark)document.body.className='light';
+
+const EMOTIONS=[
+  {id:"joy",label:"Радость",emoji:"😊",color:"#FFB347",cl:"rgba(255,179,71,0.15)"},
+  {id:"calm",label:"Спокойствие",emoji:"😌",color:"#77C9D4",cl:"rgba(119,201,212,0.15)"},
+  {id:"sadness",label:"Грусть",emoji:"😢",color:"#7B9ACC",cl:"rgba(123,154,204,0.15)"},
+  {id:"anxiety",label:"Тревога",emoji:"😰",color:"#C491C5",cl:"rgba(196,145,197,0.15)"},
+  {id:"anger",label:"Злость",emoji:"😤",color:"#E8726E",cl:"rgba(232,114,110,0.15)"},
+  {id:"love",label:"Любовь",emoji:"🥰",color:"#F4A0B5",cl:"rgba(244,160,181,0.15)"},
+  {id:"fear",label:"Страх",emoji:"😨",color:"#A39BC9",cl:"rgba(163,155,201,0.15)"},
+  {id:"surprise",label:"Удивление",emoji:"😲",color:"#F9D56E",cl:"rgba(249,213,110,0.15)"},
+  {id:"boredom",label:"Скука",emoji:"😑",color:"#B0B8BF",cl:"rgba(176,184,191,0.15)"},
+  {id:"gratitude",label:"Благодарность",emoji:"🙏",color:"#8FBF9F",cl:"rgba(143,191,159,0.15)"},
+  {id:"guilt",label:"Вина",emoji:"😔",color:"#C4A882",cl:"rgba(196,168,130,0.15)"},
+  {id:"inspiration",label:"Вдохновение",emoji:"✨",color:"#E8B84B",cl:"rgba(232,184,75,0.15)"}
+];
+const INT_LABELS=["","Едва","Слабо","Умеренно","Заметно","Сильно","Очень сильно","Пик"];
+const WD=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+const MO=["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+
+const emo=id=>EMOTIONS.find(e=>e.id===id)||{label:"?",emoji:"❓",color:"#999",cl:"rgba(150,150,150,0.15)"};
+const dk=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const hs=d=>`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+const haptic=()=>{try{tg&&tg.HapticFeedback&&tg.HapticFeedback.impactOccurred('light')}catch(e){}};
+
+function load(k,def){try{const r=localStorage.getItem(k);return r?JSON.parse(r):def}catch(e){return def}}
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+
+// ── State ──
+let state={
+  allData:load('emo-data',null),
+  settings:load('emo-settings',{startHour:8,endHour:22,reminderOn:true}),
+  screen:'today',selDate:new Date(),chartPer:'day',sumPer:'day',
+  editSum:'',selEmo:null,selInt:4,selNote:'',toast:''
+};
+
+// Demo data
+if(!state.allData||Object.keys(state.allData).length===0){
+  const data={};const now=new Date();
+  for(let off=30;off>=0;off--){
+    const d=new Date(now);d.setDate(d.getDate()-off);const key=dk(d);const entries=[];
+    const n=off===0?3:Math.floor(Math.random()*5)+2;
+    for(let e=0;e<n;e++){
+      const h=8+Math.floor(Math.random()*14),m=Math.floor(Math.random()*60);
+      const em=EMOTIONS[Math.floor(Math.random()*EMOTIONS.length)];
+      entries.push({id:`${key}-${e}`,emotionId:em.id,intensity:Math.floor(Math.random()*6)+2,
+        note:["Просто так","После встречи","На прогулке","За работой","Дома вечером",""][Math.floor(Math.random()*6)],
+        time:`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`,
+        timestamp:new Date(d.getFullYear(),d.getMonth(),d.getDate(),h,m).getTime()});
+    }
+    entries.sort((a,b)=>a.timestamp-b.timestamp);
+    data[key]={entries,summary:off>0?["Хороший день","Спокойный день","Эмоциональные качели",""][Math.floor(Math.random()*4)]:""};
+  }
+  state.allData=data;save('emo-data',state.allData);
+}
+
+function setState(patch){
+  const prev=state.screen;
+  Object.assign(state,typeof patch==='function'?patch(state):patch);
+  save('emo-data',state.allData);save('emo-settings',state.settings);
+  render();
+}
+
+function showToast(msg){state.toast=msg;render();setTimeout(()=>{state.toast='';render()},2000)}
+
+function getTodayData(){return state.allData[dk(state.selDate)]||{entries:[],summary:''}}
+function isToday(){return dk(state.selDate)===dk(new Date())}
+function fmtDate(d){return`${d.getDate()} ${MO[d.getMonth()].slice(0,3).toLowerCase()} ${d.getFullYear()}`}
+function goDay(off){const d=new Date(state.selDate);d.setDate(d.getDate()+off);setState({selDate:d});haptic()}
+function gwk(d){const j=new Date(d.getFullYear(),0,1);return`${d.getFullYear()}-W${Math.ceil(((d-j)/864e5+j.getDay()+1)/7)}`}
+
+function addEntry(){
+  if(!state.selEmo)return;
+  const now=new Date(),key=dk(now);
+  const entry={id:`${key}-${Date.now()}`,emotionId:state.selEmo,intensity:state.selInt,note:state.selNote,time:hs(now),timestamp:now.getTime()};
+  const dd=state.allData[key]||{entries:[],summary:''};
+  state.allData={...state.allData,[key]:{...dd,entries:[...dd.entries,entry].sort((a,b)=>a.timestamp-b.timestamp)}};
+  state.selEmo=null;state.selInt=4;state.selNote='';state.screen='today';
+  save('emo-data',state.allData);haptic();showToast('✓ Запись сохранена');
+}
+
+function deleteEntry(id){
+  for(const k of Object.keys(state.allData)){
+    if(state.allData[k].entries&&state.allData[k].entries.some(e=>e.id===id)){
+      state.allData[k]={...state.allData[k],entries:state.allData[k].entries.filter(e=>e.id!==id)};break;
+    }
+  }
+  save('emo-data',state.allData);haptic();render();
+}
+
+function saveSummary(){
+  if(state.sumPer==='day'){
+    const key=dk(state.selDate);
+    state.allData[key]={...(state.allData[key]||{entries:[]}),summary:state.editSum};
+  }else{
+    const mk=state.sumPer==='week'?`week-${gwk(state.selDate)}`:`month-${state.selDate.getFullYear()}-${state.selDate.getMonth()}`;
+    state.allData[`_s_${mk}`]={text:state.editSum};
+  }
+  save('emo-data',state.allData);haptic();showToast('✓ Итоги сохранены');
+}
+
+function getEntriesForPeriod(per){
+  let ent=[];
+  if(per==='day')ent=getTodayData().entries;
+  else if(per==='week'){
+    const st=new Date(state.selDate);st.setDate(st.getDate()-((st.getDay()+6)%7));
+    for(let i=0;i<7;i++){const d=new Date(st);d.setDate(st.getDate()+i);ent.push(...(state.allData[dk(d)]?.entries||[]))}
+  }else{
+    const y=state.selDate.getFullYear(),m=state.selDate.getMonth(),dim=new Date(y,m+1,0).getDate();
+    for(let day=1;day<=dim;day++)ent.push(...(state.allData[dk(new Date(y,m,day))]?.entries||[]))
+  }
+  return ent;
+}
+
+// Reminder
+setInterval(()=>{
+  if(!state.settings.reminderOn)return;
+  const now=new Date(),h=now.getHours(),ms=now.getTime();
+  if(h>=state.settings.startHour&&h<state.settings.endHour){
+    const td=state.allData[dk(now)],last=td?.entries?.[td.entries.length-1];
+    if(!last||ms-last.timestamp>3600000){
+      if(Notification.permission==='granted')new Notification('🌿 Дневник эмоций',{body:'Как ты сейчас себя чувствуешь?'})
+    }
+  }
+},60000);
+
+/* ═══ SVG CHARTS ═══ */
+function svgBarChart(data,w,h,labelKey,valueKey,maxVal){
+  if(!data.length)return'<p style="text-align:center;color:#555;padding:30px 0">Нет данных</p>';
+  const P={t:20,r:12,b:32,l:36},cw=w-P.l-P.r,ch=h-P.t-P.b;
+  const bw=Math.min(Math.floor(cw/data.length*0.65),36);
+  const gap=(cw-bw*data.length)/(data.length+1);
+  let s=`<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">`;
+  for(let i=0;i<=maxVal;i+=2){
+    const y=P.t+ch-(i/maxVal)*ch;
+    s+=`<line x1="${P.l}" y1="${y}" x2="${w-P.r}" y2="${y}" stroke="${isDark?'#2a2a38':'#e0e0e8'}" stroke-width="0.8" stroke-dasharray="4,3"/>`;
+    s+=`<text x="${P.l-6}" y="${y+4}" text-anchor="end" fill="${isDark?'#6a6a7a':'#aaa'}" font-size="10" font-family="system-ui">${i}</text>`;
+  }
+  data.forEach((d,i)=>{
+    const x=P.l+gap+(bw+gap)*i;const bh=Math.max((d[valueKey]/maxVal)*ch,0);const y=P.t+ch-bh;
+    const r=Math.min(5,bw/2);
+    if(bh>1)s+=`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="${r}" fill="${d.color||'#77C9D4'}" opacity="0.88"><animate attributeName="height" from="0" to="${bh}" dur="0.4s" fill="freeze"/><animate attributeName="y" from="${P.t+ch}" to="${y}" dur="0.4s" fill="freeze"/></rect>`;
+    if(d.emoji&&bh>15)s+=`<text x="${x+bw/2}" y="${y-5}" text-anchor="middle" font-size="13">${d.emoji}</text>`;
+    s+=`<text x="${x+bw/2}" y="${h-8}" text-anchor="middle" fill="${isDark?'#8a8a9a':'#999'}" font-size="10" font-family="system-ui">${d[labelKey]}</text>`;
+  });
+  return s+'</svg>';
+}
+
+function svgAreaChart(data,w,h,labelKey,valueKey,maxVal){
+  if(!data.length)return'<p style="text-align:center;color:#555;padding:30px 0">Нет данных</p>';
+  const P={t:20,r:15,b:32,l:36},cw=w-P.l-P.r,ch=h-P.t-P.b;
+  const sx=cw/Math.max(data.length-1,1);
+  let s=`<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">`;
+  s+=`<defs><linearGradient id="areaG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#77C9D4" stop-opacity="0.25"/><stop offset="100%" stop-color="#77C9D4" stop-opacity="0.02"/></linearGradient></defs>`;
+  for(let i=0;i<=maxVal;i+=2){
+    const y=P.t+ch-(i/maxVal)*ch;
+    s+=`<line x1="${P.l}" y1="${y}" x2="${w-P.r}" y2="${y}" stroke="${isDark?'#2a2a38':'#e0e0e8'}" stroke-width="0.8" stroke-dasharray="4,3"/>`;
+    s+=`<text x="${P.l-6}" y="${y+4}" text-anchor="end" fill="${isDark?'#6a6a7a':'#aaa'}" font-size="10" font-family="system-ui">${i}</text>`;
+  }
+  let lineD='',areaD='';
+  data.forEach((d,i)=>{
+    const x=P.l+sx*i,y=P.t+ch-(d[valueKey]/maxVal)*ch;
+    lineD+=(i===0?'M':'L')+`${x},${y}`;
+    if(i===0)areaD=`M${x},${P.t+ch}L${x},${y}`;else areaD+=`L${x},${y}`;
+    if(i===data.length-1)areaD+=`L${x},${P.t+ch}Z`;
+  });
+  s+=`<path d="${areaD}" fill="url(#areaG)"/>`;
+  s+=`<path d="${lineD}" fill="none" stroke="#77C9D4" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+  data.forEach((d,i)=>{
+    const x=P.l+sx*i,y=P.t+ch-(d[valueKey]/maxVal)*ch;
+    if(d[valueKey]>0){
+      s+=`<circle cx="${x}" cy="${y}" r="3" fill="${d.color||'#77C9D4'}" stroke="${isDark?'#131320':'#f4f5f7'}" stroke-width="1.5"/>`;
+      if(d.emoji&&data.length<=15)s+=`<text x="${x}" y="${y-9}" text-anchor="middle" font-size="11">${d.emoji}</text>`;
+    }
+    const showLabel=data.length<=10||(data.length<=20&&i%2===0)||(data.length>20&&i%4===0);
+    if(showLabel)s+=`<text x="${x}" y="${h-8}" text-anchor="middle" fill="${isDark?'#8a8a9a':'#999'}" font-size="9" font-family="system-ui">${d[labelKey]}</text>`;
+  });
+  return s+'</svg>';
+}
+
+function svgRadarChart(data,size){
+  if(!data.length)return'';
+  const cx=size/2,cy=size/2,r=size/2-45,n=data.length;
+  const maxVal=Math.max(...data.map(d=>d.value),1);
+  let s=`<svg viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${size}px;height:auto;margin:0 auto;display:block">`;
+  for(let ring=1;ring<=4;ring++){
+    const rr=r*ring/4;let poly='';
+    for(let i=0;i<n;i++){const a=Math.PI*2*i/n-Math.PI/2;poly+=`${cx+rr*Math.cos(a)},${cy+rr*Math.sin(a)} `}
+    s+=`<polygon points="${poly}" fill="none" stroke="${isDark?'#2a2a38':'#ddd'}" stroke-width="0.7"/>`;
+  }
+  for(let i=0;i<n;i++){
+    const a=Math.PI*2*i/n-Math.PI/2;
+    s+=`<line x1="${cx}" y1="${cy}" x2="${cx+r*Math.cos(a)}" y2="${cy+r*Math.sin(a)}" stroke="${isDark?'#2a2a38':'#ddd'}" stroke-width="0.5"/>`;
+    const lx=cx+(r+25)*Math.cos(a),ly=cy+(r+25)*Math.sin(a);
+    s+=`<text x="${lx}" y="${ly+4}" text-anchor="middle" fill="${isDark?'#8a8a9a':'#888'}" font-size="11">${data[i].label}</text>`;
+  }
+  let poly='';
+  for(let i=0;i<n;i++){const a=Math.PI*2*i/n-Math.PI/2;const v=data[i].value/maxVal;poly+=`${cx+r*v*Math.cos(a)},${cy+r*v*Math.sin(a)} `}
+  s+=`<polygon points="${poly}" fill="rgba(119,201,212,0.18)" stroke="#77C9D4" stroke-width="2"/>`;
+  for(let i=0;i<n;i++){const a=Math.PI*2*i/n-Math.PI/2;const v=data[i].value/maxVal;
+    s+=`<circle cx="${cx+r*v*Math.cos(a)}" cy="${cy+r*v*Math.sin(a)}" r="4" fill="#77C9D4" stroke="${isDark?'#131320':'#f4f5f7'}" stroke-width="1.5"/>`;
+  }
+  return s+'</svg>';
+}
+
+/* ═══ Chart data ═══ */
+function getChartData(){
+  const td=getTodayData();
+  if(state.chartPer==='day'){
+    return td.entries.map(e=>{const em=emo(e.emotionId);return{time:e.time,val:e.intensity,color:em.color,emoji:em.emoji,label:em.label}});
+  }
+  if(state.chartPer==='week'){
+    const days=[];const st=new Date(state.selDate);st.setDate(st.getDate()-((st.getDay()+6)%7));
+    for(let i=0;i<7;i++){
+      const d=new Date(st);d.setDate(st.getDate()+i);const k=dk(d),de=state.allData[k]?.entries||[];
+      if(!de.length)days.push({day:WD[i],val:0,dom:'—',color:isDark?'#333':'#ccc',emoji:''});
+      else{const ec={};let t=0;de.forEach(e=>{ec[e.emotionId]=(ec[e.emotionId]||0)+e.intensity;t+=e.intensity});
+        const dm=Object.entries(ec).sort((a,b)=>b[1]-a[1])[0][0],em=emo(dm);
+        days.push({day:WD[i],val:Math.round(t/de.length*10)/10,dom:em.label,color:em.color,emoji:em.emoji})}
+    }return days;
+  }
+  const y=state.selDate.getFullYear(),m=state.selDate.getMonth(),dim=new Date(y,m+1,0).getDate(),res=[];
+  for(let day=1;day<=dim;day++){
+    const d=new Date(y,m,day),k=dk(d),de=state.allData[k]?.entries||[];
+    if(!de.length)res.push({day:String(day),val:0,color:isDark?'#333':'#ccc'});
+    else{const ec={};let t=0;de.forEach(e=>{ec[e.emotionId]=(ec[e.emotionId]||0)+e.intensity;t+=e.intensity});
+      const dm=Object.entries(ec).sort((a,b)=>b[1]-a[1])[0][0],em=emo(dm);
+      res.push({day:String(day),val:Math.round(t/de.length*10)/10,color:em.color,emoji:em.emoji})}
+  }return res;
+}
+
+function getRadarData(){
+  const ent=getEntriesForPeriod(state.sumPer);
+  const c={};ent.forEach(e=>{c[e.emotionId]=(c[e.emotionId]||0)+e.intensity});
+  return EMOTIONS.filter(em=>c[em.id]).map(em=>({label:em.emoji,value:c[em.id]||0,name:em.label,color:em.color}));
+}
+
+/* ═══ Colors ═══ */
+const C={
+  bg2:isDark?'rgba(255,255,255,0.03)':'rgba(0,0,0,0.025)',
+  bg3:isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)',
+  hdr:isDark?'rgba(19,19,32,0.88)':'rgba(244,245,247,0.9)',
+  txt:isDark?'#e0e0e8':'#1a1a2e',
+  sub:isDark?'#8a8a9a':'#666',
+  sub2:isDark?'#6a6a7a':'#888',
+  sub3:isDark?'#5a5a6a':'#999',
+  brd:isDark?'#222235':'#e0e0e5',
+  inp:isDark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.04)',
+  sel:isDark?'#1e1e2e':'#eee'
+};
+
+/* ═══════════════ RENDER ═══════════════ */
+function render(){
+  const root=document.getElementById('root');
+  const td=getTodayData();
+  let h='';
+
+  // Toast
+  if(state.toast)h+=`<div class="toast-anim" style="position:fixed;top:16px;left:50%;transform:translateX(-50%);background:rgba(119,201,212,0.92);color:#111;padding:10px 24px;border-radius:12px;font-size:14px;font-weight:600;z-index:1000;backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,0.3)">${state.toast}</div>`;
+
+  // Header
+  h+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px 8px;position:sticky;top:0;z-index:10;backdrop-filter:blur(20px);background:${C.hdr}"><div style="display:flex;align-items:center;gap:10px"><span style="font-size:24px">🌿</span><span style="font-size:18px;font-weight:700;letter-spacing:-0.02em">Дневник эмоций</span></div><button onclick="setState({screen:state.screen==='settings'?'today':'settings'})" style="background:none;border:none;font-size:20px;cursor:pointer;padding:8px">⚙️</button></div>`;
+
+  // Date nav
+  if(state.screen!=='settings'&&state.screen!=='add'){
+    h+=`<div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:6px 20px 12px"><button onclick="goDay(-1)" style="background:${C.bg3};border:none;color:${C.sub};font-size:20px;width:36px;height:36px;border-radius:10px;cursor:pointer">‹</button><button onclick="setState({selDate:new Date()})" style="background:rgba(119,201,212,0.12);border:1px solid rgba(119,201,212,0.2);color:#77C9D4;font-size:14px;font-weight:600;padding:6px 18px;border-radius:10px;cursor:pointer">${isToday()?'Сегодня':fmtDate(state.selDate)}</button><button onclick="goDay(1)" style="background:${C.bg3};border:none;color:${C.sub};font-size:20px;width:36px;height:36px;border-radius:10px;cursor:pointer">›</button></div>`;
+  }
+
+  // Tabs
+  if(state.screen!=='add'&&state.screen!=='settings'){
+    h+=`<div style="display:flex;gap:4px;padding:0 16px 12px;border-bottom:1px solid ${C.brd}">`;
+    [{id:'today',l:'Записи',i:'📝'},{id:'charts',l:'Графики',i:'📊'},{id:'summary',l:'Итоги',i:'🔍'}].forEach(t=>{
+      const a=state.screen===t.id;
+      h+=`<button onclick="setState({screen:'${t.id}'});haptic()" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;background:${a?'rgba(119,201,212,0.1)':'none'};border:none;border-radius:10px;cursor:pointer;color:${a?'#77C9D4':C.sub3}"><span style="font-size:18px">${t.i}</span><span style="font-size:11px;font-weight:500">${t.l}</span></button>`;
+    });
+    h+=`</div>`;
+  }
+
+  h+=`<div class="fade-in" style="padding:12px 16px">`;
+
+  // ═══ SETTINGS ═══
+  if(state.screen==='settings'){
+    h+=`<h2 style="font-size:16px;font-weight:600;margin-bottom:16px">Настройки напоминаний</h2>`;
+    h+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid ${C.brd}"><span style="font-size:14px;color:${C.sub}">Напоминания</span><button onclick="setState({settings:{...state.settings,reminderOn:!state.settings.reminderOn}})" style="width:48px;height:28px;border-radius:14px;background:${state.settings.reminderOn?'#77C9D4':'#2a2a3a'};border:none;cursor:pointer;padding:3px;display:flex;align-items:center"><div style="width:22px;height:22px;border-radius:11px;background:#fff;transition:transform .2s;transform:translateX(${state.settings.reminderOn?'20px':'0'})"></div></button></div>`;
+    [['startHour','Начало дня'],['endHour','Конец дня']].forEach(([k,lbl])=>{
+      h+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid ${C.brd}"><span style="font-size:14px;color:${C.sub}">${lbl}</span><select onchange="setState({settings:{...state.settings,${k}:+this.value}})" style="background:${C.sel};border:1px solid ${C.brd};border-radius:8px;color:${C.txt};padding:6px 10px;font-size:14px">${Array.from({length:24},(_,i)=>`<option value="${i}"${state.settings[k]===i?' selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select></div>`;
+    });
+    h+=`<p style="font-size:12px;color:#555;margin-top:12px;line-height:1.5">Напоминание раз в час, если последняя запись была более часа назад</p>`;
+    h+=`<button onclick="if('Notification' in window)Notification.requestPermission();showToast('✓ Уведомления включены');setState({screen:'today'})" style="width:100%;padding:14px;border-radius:14px;border:none;background:#77C9D4;color:#111;font-size:15px;font-weight:600;cursor:pointer;margin-top:20px">Включить уведомления</button>`;
+    h+=`<button onclick="if(confirm('Удалить все данные?')){localStorage.removeItem('emo-data');state.allData={};render();showToast('Данные удалены')}" style="width:100%;padding:14px;border-radius:14px;border:1px solid #444;background:transparent;color:#888;font-size:14px;cursor:pointer;margin-top:10px">Очистить все данные</button>`;
+  }
+
+  // ═══ ADD ENTRY ═══
+  if(state.screen==='add'){
+    h+=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><button onclick="setState({screen:'today',selEmo:null,selNote:''})" style="background:none;border:none;color:#77C9D4;font-size:14px;cursor:pointer;font-weight:500">← Назад</button><h2 style="font-size:16px;font-weight:600;margin:0">Новая запись</h2></div>`;
+    h+=`<p style="font-size:14px;color:${C.sub};margin-bottom:12px">Что ты сейчас чувствуешь?</p>`;
+    h+=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">`;
+    EMOTIONS.forEach(em=>{
+      const sel=state.selEmo===em.id;
+      h+=`<button onclick="setState({selEmo:'${em.id}'});haptic()" style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px 6px;border-radius:14px;cursor:pointer;transition:all .2s;border:2px solid ${sel?em.color:'transparent'};background:${sel?em.color:em.cl};color:${sel?'#fff':em.color};transform:scale(${sel?1.06:1});box-shadow:${sel?'0 4px 20px '+em.color+'55':'none'}"><span style="font-size:20px">${em.emoji}</span><span style="font-size:11px;font-weight:500">${em.label}</span></button>`;
+    });
+    h+=`</div>`;
+    if(state.selEmo){
+      const sc=emo(state.selEmo);
+      h+=`<p style="font-size:14px;color:${C.sub};margin:16px 0 12px">Насколько интенсивно? — <strong style="color:${sc.color}">${INT_LABELS[state.selInt]}</strong></p>`;
+      h+=`<div style="display:flex;align-items:center;gap:12px"><span style="font-size:13px;color:#666;width:20px;text-align:center">1</span><input type="range" min="1" max="7" value="${state.selInt}" oninput="setState({selInt:+this.value})" style="flex:1"/><span style="font-size:13px;color:#666;width:20px;text-align:center">7</span></div>`;
+      h+=`<p style="font-size:14px;color:${C.sub};margin:16px 0 12px">Почему? Что происходит?</p>`;
+      h+=`<textarea id="noteTA" oninput="state.selNote=this.value" placeholder="Опиши свои мысли и обстоятельства..." rows="3" style="width:100%;background:${C.inp};border:1px solid ${C.brd};border-radius:12px;color:${C.txt};padding:12px 14px;font-size:14px;line-height:1.5;resize:vertical;font-family:inherit">${state.selNote||''}</textarea>`;
+      h+=`<button onclick="addEntry()" style="width:100%;padding:14px;border-radius:14px;border:none;background:${sc.color};color:#111;font-size:15px;font-weight:600;cursor:pointer;margin-top:20px">Сохранить запись</button>`;
+    }
+  }
+
+  // ═══ TODAY ═══
+  if(state.screen==='today'){
+    if(!td.entries.length){
+      h+=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:12px"><span style="font-size:48px">🌱</span><p style="font-size:16px;color:#666;font-weight:500">Пока нет записей за этот день</p>${isToday()?'<p style="font-size:13px;color:#444">Нажми + чтобы добавить первую</p>':''}</div>`;
+    }else{
+      td.entries.forEach((entry,idx)=>{
+        const em=emo(entry.emotionId);
+        const dots=Array.from({length:entry.intensity}).map((_,i)=>`<div style="width:6px;height:6px;border-radius:3px;background:${em.color};opacity:${(0.4+i*0.1).toFixed(1)}"></div>`).join('');
+        h+=`<div style="display:flex;gap:12px;min-height:60px"><div style="display:flex;flex-direction:column;align-items:center;width:20px;padding-top:6px"><div style="width:12px;height:12px;border-radius:50%;background:${em.color};flex-shrink:0"></div>${idx<td.entries.length-1?`<div style="width:2px;flex:1;margin-top:4px;border-radius:1px;min-height:20px;background:${em.color}33"></div>`:''}</div><div style="flex:1;background:${C.bg2};border-radius:0 12px 12px 0;padding:10px 14px;margin-bottom:8px;border-left:3px solid ${em.color}"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12px;color:${C.sub2};font-weight:600">${entry.time}</span><span style="font-size:13px;font-weight:500">${em.emoji} ${em.label}</span><div style="display:flex;gap:2px;margin-left:auto">${dots}</div><button onclick="deleteEntry('${entry.id}')" style="background:none;border:none;color:#555;font-size:18px;cursor:pointer;padding:0 4px;line-height:1">×</button></div>${entry.note?`<p style="font-size:13px;color:${C.sub};margin-top:6px;line-height:1.5">${entry.note}</p>`:''}</div></div>`;
+      });
+    }
+  }
+
+  // ═══ CHARTS ═══
+  if(state.screen==='charts'){
+    h+=`<div style="display:flex;gap:6px;margin-bottom:16px">`;
+    [{id:'day',l:'День'},{id:'week',l:'Неделя'},{id:'month',l:'Месяц'}].forEach(p=>{
+      const a=state.chartPer===p.id;
+      h+=`<button onclick="setState({chartPer:'${p.id}'});haptic()" style="flex:1;padding:8px;border-radius:10px;border:none;background:${a?'rgba(119,201,212,0.15)':C.bg3};color:${a?'#77C9D4':C.sub2};font-size:13px;font-weight:500;cursor:pointer">${p.l}</button>`;
+    });
+    h+=`</div>`;
+
+    const cd=getChartData();
+
+    if(state.chartPer==='day'){
+      h+=`<div style="background:${C.bg2};border-radius:16px;padding:16px 10px;margin-bottom:16px"><h3 style="font-size:14px;font-weight:600;color:#a0a0b0;margin-bottom:12px;padding-left:6px">Эмоции за день</h3>${svgBarChart(cd,440,210,'time','val',7)}`;
+      if(cd.length>0){
+        h+=`<div style="display:flex;flex-wrap:wrap;gap:10px;padding:10px 6px 0">`;
+        const seen=new Set();cd.forEach(d=>{if(!seen.has(d.label)){seen.add(d.label);h+=`<span style="display:flex;align-items:center;gap:5px;font-size:11px;color:${C.sub}"><span style="width:8px;height:8px;border-radius:4px;background:${d.color}"></span>${d.emoji} ${d.label}</span>`}});
+        h+=`</div>`;
+      }
+      h+=`</div>`;
+    }
+
+    if(state.chartPer==='week'){
+      h+=`<div style="background:${C.bg2};border-radius:16px;padding:16px 10px;margin-bottom:16px"><h3 style="font-size:14px;font-weight:600;color:#a0a0b0;margin-bottom:12px;padding-left:6px">Средняя интенсивность за неделю</h3>${svgBarChart(cd,440,210,'day','val',7)}`;
+      h+=`<div style="display:flex;gap:6px;padding:12px 4px 0;flex-wrap:wrap;justify-content:center">`;
+      cd.filter(d=>d.val>0).forEach(d=>{
+        h+=`<div style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 10px;background:${C.bg3};border-radius:10px;min-width:52px"><span style="font-size:11px;color:${C.sub2};font-weight:600">${d.day}</span><span style="font-size:20px">${d.emoji}</span><span style="font-size:11px;color:${C.sub}">${d.dom}</span></div>`;
+      });
+      h+=`</div></div>`;
+    }
+
+    if(state.chartPer==='month'){
+      h+=`<div style="background:${C.bg2};border-radius:16px;padding:16px 10px;margin-bottom:16px"><h3 style="font-size:14px;font-weight:600;color:#a0a0b0;margin-bottom:12px;padding-left:6px">${MO[state.selDate.getMonth()]} ${state.selDate.getFullYear()}</h3>${svgAreaChart(cd,440,210,'day','val',7)}`;
+      h+=`<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;padding:12px 4px 0">`;
+      cd.forEach(d=>{
+        const op=d.val>0?Math.round(d.val/7*200+55).toString(16).padStart(2,'0'):'00';
+        h+=`<div style="aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;background:${d.val>0?d.color+op:(isDark?'#1e1e2a':'#e8e8ee')}"><span style="font-size:9px;color:${d.val>3?'#fff':'#666'}">${d.day}</span></div>`;
+      });
+      h+=`</div></div>`;
+    }
+  }
+
+  // ═══ SUMMARY ═══
+  if(state.screen==='summary'){
+    h+=`<div style="display:flex;gap:6px;margin-bottom:16px">`;
+    [{id:'day',l:'День'},{id:'week',l:'Неделя'},{id:'month',l:'Месяц'}].forEach(p=>{
+      const a=state.sumPer===p.id;
+      h+=`<button onclick="var per='${p.id}';setState({sumPer:per});if(per==='day'){state.editSum=state.allData[dk(state.selDate)]?.summary||''}else{var mk=per==='week'?'week-'+gwk(state.selDate):'month-'+state.selDate.getFullYear()+'-'+state.selDate.getMonth();state.editSum=state.allData['_s_'+mk]?.text||''};haptic();render()" style="flex:1;padding:8px;border-radius:10px;border:none;background:${a?'rgba(119,201,212,0.15)':C.bg3};color:${a?'#77C9D4':C.sub2};font-size:13px;font-weight:500;cursor:pointer">${p.l}</button>`;
+    });
+    h+=`</div>`;
+
+    const rd=getRadarData();
+    const totalE=getEntriesForPeriod(state.sumPer).length;
+
+    if(rd.length>0){
+      h+=`<div style="background:${C.bg2};border-radius:16px;padding:16px 10px;margin-bottom:16px"><h3 style="font-size:14px;font-weight:600;color:#a0a0b0;margin-bottom:12px;padding-left:6px">Профиль эмоций</h3>${svgRadarChart(rd,300)}</div>`;
+
+      const sorted=[...rd].sort((a,b)=>b.value-a.value);
+      h+=`<div style="display:flex;gap:8px;margin-bottom:16px"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:${C.bg2};border-radius:14px;padding:14px 8px"><span style="font-size:22px;font-weight:700">${rd.length}</span><span style="font-size:11px;color:${C.sub2}">эмоций</span></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:${C.bg2};border-radius:14px;padding:14px 8px"><span style="font-size:22px;font-weight:700">${sorted[0]?.label||''}</span><span style="font-size:11px;color:${C.sub2}">доминирует</span></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;background:${C.bg2};border-radius:14px;padding:14px 8px"><span style="font-size:22px;font-weight:700">${totalE}</span><span style="font-size:11px;color:${C.sub2}">записей</span></div></div>`;
+
+      // Top emotions
+      h+=`<div style="background:${C.bg2};border-radius:16px;padding:12px 14px;margin-bottom:16px"><h3 style="font-size:13px;font-weight:600;color:#a0a0b0;margin-bottom:10px">Топ эмоций</h3>`;
+      sorted.slice(0,5).forEach((d,i)=>{
+        const pct=Math.round(d.value/sorted[0].value*100);
+        h+=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span style="font-size:11px;color:${C.sub2};width:14px">${i+1}</span><span style="font-size:16px">${d.label}</span><span style="font-size:12px;color:${C.sub};flex:0 0 auto">${d.name}</span><div style="flex:1;height:6px;background:${C.bg3};border-radius:3px;overflow:hidden"><div style="width:${pct}%;height:100%;background:${d.color};border-radius:3px"></div></div></div>`;
+      });
+      h+=`</div>`;
+    }
+
+    const perLabel=state.sumPer==='day'?'дня':state.sumPer==='week'?'недели':'месяца';
+    h+=`<div style="background:${C.bg2};border-radius:16px;padding:16px"><h3 style="font-size:14px;font-weight:600;color:#a0a0b0;margin-bottom:12px">Итоги ${perLabel}</h3><textarea id="sumTA" oninput="state.editSum=this.value" placeholder="Запиши свои мысли и выводы..." rows="5" style="width:100%;background:${C.inp};border:1px solid ${C.brd};border-radius:12px;color:${C.txt};padding:12px 14px;font-size:14px;line-height:1.6;resize:vertical;font-family:inherit;min-height:120px">${state.editSum||''}</textarea><button onclick="saveSummary()" style="width:100%;padding:14px;border-radius:14px;border:none;background:#77C9D4;color:#111;font-size:15px;font-weight:600;cursor:pointer;margin-top:16px">Сохранить итоги</button></div>`;
+  }
+
+  h+=`</div>`; // content
+
+  // FAB
+  if(state.screen!=='add'&&state.screen!=='settings'){
+    h+=`<button onclick="setState({screen:'add'});haptic()" style="position:fixed;bottom:24px;right:max(20px,calc(50% - 220px));width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#77C9D4 0%,#5BA8B5 100%);border:none;box-shadow:0 8px 32px rgba(119,201,212,0.35);cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:100"><span style="font-size:28px;color:#fff;font-weight:300;line-height:1">+</span></button>`;
+  }
+
+  root.innerHTML=h;
+}
+
+render();
+</script>
+</body>
+</html>
